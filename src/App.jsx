@@ -271,6 +271,11 @@ const css = `
   .no-char{text-align:center;padding:60px 20px;}
   .no-char h2{font-family:'Cinzel',serif;color:var(--accent);margin-bottom:12px;}
   .loading{display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--bg);font-family:'Cinzel',serif;color:var(--accent);font-size:1.2rem;}
+  .dm-banner{background:rgba(123,94,167,0.15);border:1px solid rgba(123,94,167,0.4);border-radius:10px;padding:12px 16px;color:#9b7be0;font-size:0.85rem;margin-bottom:16px;display:flex;align-items:center;gap:10px;}
+  .dm-back-btn{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 16px;border-radius:8px;cursor:pointer;font-family:'Cinzel',serif;font-size:0.8rem;font-weight:700;transition:all 0.2s;white-space:nowrap;}
+  .dm-back-btn:hover{border-color:var(--accent2);color:var(--accent2);}
+  .char-card-clickable{cursor:pointer;transition:border 0.2s,transform 0.15s;}
+  .char-card-clickable:hover{border-color:var(--accent);transform:translateY(-2px);}
   @media(max-width:640px){
     .stat-grid{grid-template-columns:repeat(3,1fr);}
     .action-row{grid-template-columns:repeat(3,1fr);}
@@ -544,6 +549,7 @@ export default function App(){
   const [showAddModal,setShowAddModal]     = useState(false);
   const [useModal,setUseModal]             = useState(null);
   const [reactivateModal,setReactivateModal] = useState(null);
+  const [dmViewChar,setDmViewChar]           = useState(null); // { id, data } — which player the DM is inspecting
   const [invInput,setInvInput]             = useState("");
   const [hpInput,setHpInput]               = useState("");
   const [hpMode,setHpMode]                 = useState("heal");
@@ -592,6 +598,14 @@ export default function App(){
       if(currentUser.role==="player"){
         loadCharFromDb(currentUser.uid).then(c=>{ if(c) setChar(c); });
       }
+      // if DM is inspecting a player, refresh that char too
+      if(currentUser.role==="dm"){
+        setDmViewChar(prev=>{
+          if(!prev) return prev;
+          loadCharFromDb(prev.id).then(c=>{ if(c) setDmViewChar({id:prev.id,data:c}); });
+          return prev;
+        });
+      }
     },5000);
     return ()=>clearInterval(iv);
   },[currentUser,screen,loadAllChars]);
@@ -599,6 +613,14 @@ export default function App(){
   const saveChar = async(updated)=>{
     setChar(updated);
     await saveCharToDb(currentUser.uid, updated);
+  };
+
+  // Saves a player's char on behalf of the DM
+  const saveDmChar = async(updated)=>{
+    setDmViewChar({...dmViewChar, data:updated});
+    await saveCharToDb(updated.id, updated);
+    // also refresh allChars so DM overview updates
+    setAllChars(prev=>prev.map(c=>c.id===updated.id?updated:c));
   };
 
   // ── AUTH
@@ -1022,16 +1044,260 @@ export default function App(){
             </div>
           )}
 
+          {/* ══ DM: PLAYER SHEET VIEW ══ */}
+          {screen==="dm"&&dmViewChar&&(()=>{
+            const dc_char = dmViewChar.data;
+            const dc_pb   = profBonus(dc_char.level||1);
+            const dc_atk  = getAttackBonus(dc_char);
+            const dc_dc   = getSpellSaveDC(dc_char);
+            const dc_save = async(updated)=>{ await saveDmChar(updated); };
+            // local wrappers that operate on dmViewChar instead of char
+            const dcUpdateStat=(stat,val)=>{ dc_save({...dc_char,stats:{...dc_char.stats,[stat]:val}}); setEditStat(null); };
+            const dcUpdateHp=(mode)=>{
+              const amt=parseInt(hpInput)||0; if(!amt) return;
+              let u={...dc_char};
+              if(mode==="heal") u.hp={...dc_char.hp,current:Math.min(dc_char.hp.max,dc_char.hp.current+amt)};
+              else{ let d=amt,tmp=Math.min(dc_char.hp.temp||0,d); d-=tmp; u.hp={...dc_char.hp,temp:(dc_char.hp.temp||0)-tmp,current:Math.max(0,dc_char.hp.current-d)}; }
+              setHpInput(""); dc_save(u);
+            };
+            const dcToggleSkillProf=(key)=>dc_save({...dc_char,skillProfs:{...dc_char.skillProfs,[key]:!dc_char.skillProfs?.[key]}});
+            const dcToggleSaveProf=(stat)=>dc_save({...dc_char,savingThrowProfs:{...dc_char.savingThrowProfs,[stat]:!dc_char.savingThrowProfs?.[stat]}});
+            const dcToggleCondition=(cond)=>{ const c=dc_char.conditions.includes(cond)?dc_char.conditions.filter(x=>x!==cond):[...dc_char.conditions,cond]; dc_save({...dc_char,conditions:c}); };
+            const dcAddInvItem=()=>{ if(!invInput.trim()) return; dc_save({...dc_char,inventory:[...(dc_char.inventory||[]),invInput.trim()]}); setInvInput(""); };
+            const dcRemoveInvItem=(i)=>{ const inv=[...dc_char.inventory]; inv.splice(i,1); dc_save({...dc_char,inventory:inv}); };
+            const dcAddEntry=(type,item)=>{
+              const sanitized=type==="spell"?{...item,spellLevel:Number(item.spellLevel??0)}:item;
+              if(type==="ability") dc_save({...dc_char,abilities:[...(dc_char.abilities||[]),sanitized]});
+              else dc_save({...dc_char,spells:[...(dc_char.spells||[]),sanitized]});
+              setShowAddModal(false);
+            };
+            const dcRemoveEntry=(type,id)=>{ if(type==="ability") dc_save({...dc_char,abilities:(dc_char.abilities||[]).filter(a=>a.id!==id)}); else dc_save({...dc_char,spells:(dc_char.spells||[]).filter(s=>s.id!==id)}); };
+            const dcUpdateSpellSlot=(lv,used)=>dc_save({...dc_char,spellSlotsUsed:{...dc_char.spellSlotsUsed,[lv]:Math.max(0,Math.min(dc_char.spellSlots[lv],used))}});
+            const dcToggleAction=(act)=>{ if(dc_char.actions?.[act]) dc_save({...dc_char,actions:{...dc_char.actions,[act]:false}}); else dc_save({...dc_char,actions:{...dc_char.actions,[act]:true}}); };
+            const dcResetTurn=()=>dc_save({...dc_char,actions:{action:false,bonusAction:false,reaction:false,freeAction:false,movement:false}});
+            const dcHandleUseConfirm=(item,type2,slotLevel)=>{ let u={...dc_char}; u.actions={...u.actions,[item.actionType]:true}; if(type2==="spell"&&item.spellLevel>0&&slotLevel!=null) u.spellSlotsUsed={...u.spellSlotsUsed,[slotLevel]:(u.spellSlotsUsed[slotLevel]||0)+1}; dc_save(u); setUseModal(null); };
+            return(<>
+              {/* DM banner + back button */}
+              <div className="dm-banner">
+                <span style={{flex:1}}>👁 {t.inspecting} <strong>{dc_char.name}</strong> — {t.dmEditBanner}</span>
+                <button className="dm-back-btn" onClick={()=>{ setDmViewChar(null); setEditStat(null); setShowAddModal(false); setUseModal(null); }}>{t.backToDm}</button>
+              </div>
+
+              {/* Header */}
+              <div className="card">
+                <div className="char-header">
+                  <div className="char-info">
+                    <div className="char-name">{dc_char.name}</div>
+                    <div className="char-sub">{dc_char.race} · {dc_char.class} · Lv {dc_char.level}</div>
+                    {(dc_char.conditions.length>0||dc_char.concentration)&&(
+                      <div className="badges" style={{marginTop:8}}>
+                        {dc_char.conditions.map(c=><span key={c} className="badge badge-red">{c}</span>)}
+                        {dc_char.concentration&&<span className="badge badge-purple">{t.conc}</span>}
+                      </div>
+                    )}
+                  </div>
+                  <div className="meta-grid">
+                    {[["ac",t.ac],["speed",t.speed],["initiative",t.initiative]].map(([k,lbl])=>(
+                      <div key={k} className="meta-item">
+                        <input type="number" style={{width:60,background:"var(--bg)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 6px",borderRadius:6,fontFamily:"Cinzel,serif",fontSize:"1.4rem",textAlign:"center",fontWeight:700,outline:"none"}}
+                          value={dc_char[k]} onChange={e=>dc_save({...dc_char,[k]:+e.target.value})}/>
+                        <div className="meta-label">{lbl}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Ability Scores */}
+              <div className="card">
+                <div className="card-title">{lang==="it"?"Caratteristiche":"Ability Scores"}</div>
+                <div className="stat-grid">{STATS.map(s=><StatBox key={s} stat={s} value={dc_char.stats[s]} lang={lang} onClick={()=>setEditStat(s)}/>)}</div>
+              </div>
+              {editStat&&<EditStatModal stat={editStat} value={dc_char.stats[editStat]} lang={lang} onSave={v=>dcUpdateStat(editStat,v)} onClose={()=>setEditStat(null)}/>}
+
+              {/* Quick Bonuses */}
+              <div className="card">
+                <div className="card-title">{lang==="it"?"Bonus Rapidi":"Quick Bonuses"}</div>
+                <div className="quick-stats">
+                  <div className="quick-stat-box"><div className="quick-stat-val green">{modStr(dc_pb)}</div><div className="quick-stat-label">{t.proficiencyBonus}</div></div>
+                  <div className="quick-stat-box"><div className="quick-stat-val blue">{modStr(dc_atk)}</div><div className="quick-stat-label">{t.attackBonus}</div></div>
+                  <div className="quick-stat-box"><div className="quick-stat-val purple">{dc_dc}</div><div className="quick-stat-label">{t.spellSaveDC}</div></div>
+                </div>
+                <div style={{display:"flex",gap:16,flexWrap:"wrap",marginTop:16}}>
+                  <div style={{flex:1,minWidth:140}}>
+                    <div style={{fontSize:"0.7rem",color:"var(--muted)",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>{t.spellcastingStat}</div>
+                    <select value={dc_char.spellcastingStat||"INT"} onChange={e=>dc_save({...dc_char,spellcastingStat:e.target.value})}
+                      style={{width:"100%",background:"var(--bg)",border:"1px solid var(--border)",color:"var(--text)",padding:"8px 10px",borderRadius:8,fontFamily:"Lato,sans-serif",fontSize:"0.9rem",outline:"none"}}>
+                      {STATS.map(s=><option key={s} value={s}>{lang==="it"?STAT_IT[s]:s}</option>)}
+                    </select>
+                  </div>
+                  <div style={{flex:1,minWidth:140}}>
+                    <div style={{fontSize:"0.7rem",color:"var(--muted)",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>{t.attackBonusExtra}</div>
+                    <input type="number" value={dc_char.attackBonusExtra||0} onChange={e=>dc_save({...dc_char,attackBonusExtra:+e.target.value})}
+                      style={{width:"100%",background:"var(--bg)",border:"1px solid var(--border)",color:"var(--text)",padding:"8px 10px",borderRadius:8,fontFamily:"Lato,sans-serif",fontSize:"0.9rem",outline:"none"}}/>
+                  </div>
+                </div>
+              </div>
+
+              {/* Skills + Saving Throws */}
+              <div className="two-col">
+                <SkillsSection char={dc_char} lang={lang} onToggle={dcToggleSkillProf}/>
+                <SavingThrowsSection char={dc_char} lang={lang} onToggle={dcToggleSaveProf}/>
+              </div>
+
+              {/* HP */}
+              <div className="card">
+                <div className="card-title">{t.hp}</div>
+                <HpBar current={dc_char.hp.current} max={dc_char.hp.max}/>
+                <div className="hp-row">
+                  <div className="hp-nums" style={{color:dc_char.hp.current===0?"#e74c3c":dc_char.hp.current<dc_char.hp.max/4?"#f39c12":"var(--text)"}}>
+                    {dc_char.hp.current} / {dc_char.hp.max}
+                    {dc_char.hp.temp>0&&<span style={{fontSize:"0.9rem",color:"#9b7be0",marginLeft:8}}>+{dc_char.hp.temp} {t.temp}</span>}
+                  </div>
+                  <div className="quick-hp">
+                    <input type="number" min={0} value={hpInput} onChange={e=>setHpInput(e.target.value)} placeholder={t.amount} onKeyDown={e=>e.key==="Enter"&&dcUpdateHp(hpMode)}/>
+                    <button className="btn btn-green btn-sm" onClick={()=>{setHpMode("heal");dcUpdateHp("heal");}}>{t.heal}</button>
+                    <button className="btn btn-danger btn-sm" onClick={()=>{setHpMode("damage");dcUpdateHp("damage");}}>{t.damage}</button>
+                  </div>
+                </div>
+                <div className="sep"/>
+                <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+                  <div><div style={{fontSize:"0.7rem",color:"var(--muted)",marginBottom:4}}>Max HP</div>
+                    <input type="number" min={1} style={{width:70,background:"var(--bg)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 6px",borderRadius:6,fontFamily:"Cinzel,serif",fontSize:"1rem",textAlign:"center",outline:"none"}} value={dc_char.hp.max} onChange={e=>dc_save({...dc_char,hp:{...dc_char.hp,max:+e.target.value}})}/>
+                  </div>
+                  <div><div style={{fontSize:"0.7rem",color:"var(--muted)",marginBottom:4}}>{t.temp}</div>
+                    <input type="number" min={0} style={{width:70,background:"var(--bg)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 6px",borderRadius:6,fontFamily:"Cinzel,serif",fontSize:"1rem",textAlign:"center",outline:"none"}} value={dc_char.hp.temp||0} onChange={e=>dc_save({...dc_char,hp:{...dc_char.hp,temp:+e.target.value}})}/>
+                  </div>
+                </div>
+              </div>
+
+              {/* Combat actions */}
+              <div className="card">
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+                  <span style={{fontFamily:"Cinzel,serif",fontSize:"0.75rem",color:"var(--muted)",textTransform:"uppercase",letterSpacing:"1.5px"}}>{lang==="it"?"Turno":"Combat Turn"}</span>
+                  <button className="btn btn-ghost btn-sm" onClick={dcResetTurn}>{t.resetTurn}</button>
+                </div>
+                <div className="action-row">
+                  {ACTION_KEYS.map((key,i)=>{
+                    const used=dc_char.actions?.[key]||false;
+                    const c=actionColor(key);
+                    return(
+                      <div key={key} className={`action-btn${used?" consumed":""}`}
+                        style={!used?{borderColor:c.border,background:c.bg,color:c.text}:{}}
+                        onClick={()=>dcToggleAction(key)}>
+                        <div className="action-dot" style={!used?{background:c.text}:{}}/>
+                        <div className="action-label">{lang==="it"?ACTION_TYPES_IT[i]:ACTION_TYPES_EN[i]}</div>
+                        <div className="action-status" style={{fontSize:"0.6rem",marginTop:3}}>{used?(lang==="it"?"✗ Usata":"✗ Used"):(lang==="it"?"✓ Disponibile":"✓ Available")}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Conditions */}
+              <div className="card">
+                <div className="card-title">{t.conditions}</div>
+                <div className="cond-grid">
+                  {condArr.map((c,i)=><div key={c} className={`cond-chip ${dc_char.conditions.includes(CONDITIONS_EN[i])?"active":""}`} onClick={()=>dcToggleCondition(CONDITIONS_EN[i])}>{c}</div>)}
+                </div>
+                <div className="sep"/>
+                <div className="conc-toggle" onClick={()=>dc_save({...dc_char,concentration:!dc_char.concentration})}>
+                  <div className={`toggle ${dc_char.concentration?"on":""}`}/>
+                  <span>{t.concentration}</span>
+                  {dc_char.concentration&&<span className="badge badge-purple">{t.conc}</span>}
+                </div>
+              </div>
+
+              {/* Abilities */}
+              <div className="card">
+                <div className="section-header"><span className="section-title">{t.abilities}</span><button className="btn btn-ghost btn-sm" onClick={()=>setShowAddModal("ability")}>+ {t.addAbility}</button></div>
+                {(dc_char.abilities||[]).length===0?<p style={{color:"var(--muted)",fontSize:"0.85rem"}}>{t.noAbilities}</p>
+                  :<div className="ability-list">{(dc_char.abilities||[]).map(a=>(
+                    <div key={a.id} className="ability-card">
+                      <div className="ability-card-info"><div className="ability-card-name">{a.name}</div>{a.desc&&<div className="ability-card-desc">{a.desc}</div>}</div>
+                      <div className="ability-card-meta">
+                        <ActionTag actionKey={a.actionType} lang={lang}/>
+                        <button style={{background:"none",border:"none",color:"var(--red)",cursor:"pointer",fontSize:"1.1rem"}} onClick={()=>dcRemoveEntry("ability",a.id)}>×</button>
+                      </div>
+                    </div>
+                  ))}</div>
+                }
+                {showAddModal==="ability"&&<AddAbilityModal lang={lang} type="ability" onSave={item=>dcAddEntry("ability",item)} onClose={()=>setShowAddModal(false)}/>}
+              </div>
+
+              {/* Spells */}
+              <div className="card">
+                <div className="section-header"><span className="section-title">{t.spells}</span><button className="btn btn-ghost btn-sm" onClick={()=>setShowAddModal("spell")}>+ {t.addSpell}</button></div>
+                {(dc_char.spells||[]).length===0?<p style={{color:"var(--muted)",fontSize:"0.85rem"}}>{t.noSpells}</p>
+                  :<div className="ability-list">{(dc_char.spells||[]).map(s=>(
+                    <div key={s.id} className="ability-card">
+                      <div className="ability-card-info"><div className="ability-card-name">{s.name}</div>{s.desc&&<div className="ability-card-desc">{s.desc}</div>}</div>
+                      <div className="ability-card-meta">
+                        <span style={{fontSize:"0.7rem",color:"var(--accent2)",fontWeight:700,background:"rgba(123,94,167,0.12)",padding:"3px 8px",borderRadius:99,border:"1px solid rgba(123,94,167,0.25)"}}>{s.spellLevel===0?(lang==="it"?"Trucchetto":"Cantrip"):`Lv ${s.spellLevel}`}</span>
+                        <ActionTag actionKey={s.actionType} lang={lang}/>
+                        <button style={{background:"none",border:"none",color:"var(--red)",cursor:"pointer",fontSize:"1.1rem"}} onClick={()=>dcRemoveEntry("spell",s.id)}>×</button>
+                      </div>
+                    </div>
+                  ))}</div>
+                }
+                {showAddModal==="spell"&&<AddAbilityModal lang={lang} type="spell" onSave={item=>dcAddEntry("spell",item)} onClose={()=>setShowAddModal(false)}/>}
+              </div>
+
+              {/* Spell Slots */}
+              <div className="card">
+                <div className="card-title">{t.spellSlots}</div>
+                <div className="spell-grid">
+                  {SPELL_SLOTS.map(lv=>(
+                    <div key={lv} className="spell-slot">
+                      <div className="spell-slot-label">Lv {lv}</div>
+                      <div className="spell-pips">
+                        {Array.from({length:dc_char.spellSlots[lv]||0}).map((_,i)=>(
+                          <div key={i} className={`pip ${i<(dc_char.spellSlotsUsed[lv]||0)?"full":""}`} onClick={()=>dcUpdateSpellSlot(lv,i<(dc_char.spellSlotsUsed[lv]||0)?i:i+1)}/>
+                        ))}
+                        {(dc_char.spellSlots[lv]||0)===0&&<span style={{fontSize:"0.7rem",color:"var(--muted)"}}>—</span>}
+                      </div>
+                      <div className="slot-controls">
+                        <button className="slot-btn" onClick={()=>dc_save({...dc_char,spellSlots:{...dc_char.spellSlots,[lv]:Math.max(0,(dc_char.spellSlots[lv]||0)-1)},spellSlotsUsed:{...dc_char.spellSlotsUsed,[lv]:Math.min(dc_char.spellSlotsUsed[lv]||0,Math.max(0,(dc_char.spellSlots[lv]||0)-1))}})}>−</button>
+                        <span style={{flex:1,textAlign:"center",fontSize:"0.75rem",color:"var(--muted)"}}>{dc_char.spellSlots[lv]||0}</span>
+                        <button className="slot-btn" onClick={()=>dc_save({...dc_char,spellSlots:{...dc_char.spellSlots,[lv]:(dc_char.spellSlots[lv]||0)+1}})}>+</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Inventory */}
+              <div className="card">
+                <div className="card-title">{t.inventory}</div>
+                <div className="inv-list">{(dc_char.inventory||[]).map((item,i)=><div key={i} className="inv-item"><span>{item}</span><button onClick={()=>dcRemoveInvItem(i)}>×</button></div>)}</div>
+                <div className="inv-input-row">
+                  <input className="inv-input" value={invInput} onChange={e=>setInvInput(e.target.value)} placeholder={t.addItem} onKeyDown={e=>e.key==="Enter"&&dcAddInvItem()}/>
+                  <button className="btn btn-ghost btn-sm" onClick={dcAddInvItem}>+</button>
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div className="card">
+                <div className="card-title">{t.notes}</div>
+                <textarea className="notes-area" value={dc_char.notes||""} onChange={e=>dc_save({...dc_char,notes:e.target.value})}/>
+              </div>
+
+              {/* UseModal for combat abilities */}
+              {useModal&&<UseModal lang={lang} item={useModal.item} type={useModal.type} char={dc_char} onConfirm={(slot)=>dcHandleUseConfirm(useModal.item,useModal.type,slot)} onClose={()=>setUseModal(null)}/>}
+            </>);
+          })()}
+
           {/* ══ DM VIEW ══ */}
-          {screen==="dm"&&(<>
+          {screen==="dm"&&!dmViewChar&&(<>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
               <h2 style={{fontFamily:"Cinzel,serif",color:"var(--accent)"}}>{t.allChars}</h2>
               <button className="btn btn-ghost btn-sm" onClick={loadAllChars}>{lang==="it"?"Aggiorna":"Refresh"}</button>
             </div>
+            <p style={{color:"var(--muted)",fontSize:"0.82rem",marginBottom:12}}>🖊 {lang==="it"?"Clicca su un personaggio per aprirne la scheda":"Click a character card to open their full sheet"}</p>
             {allChars.filter(c=>c.role!=="dm").length===0?<p style={{color:"var(--muted)"}}>{t.noChars}</p>
               :<div className="char-cards">
                 {allChars.filter(c=>c.role!=="dm").map(c=>(
-                  <div key={c.id} className="char-card">
+                  <div key={c.id} className="char-card char-card-clickable" onClick={()=>setDmViewChar({id:c.id,data:c})}>
                     <div className="char-card-name">{c.name}</div>
                     <div className="char-card-sub">{c.race} · {c.class} · Lv {c.level}</div>
                     <HpBar current={c.hp.current} max={c.hp.max}/>
