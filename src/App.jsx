@@ -975,9 +975,18 @@ export default function App(){
 
   const isDM=currentUser?.role==="dm";
   const condArr=lang==="it"?CONDITIONS_IT:CONDITIONS_EN;
-  const tabs=isDM
-    ?[["parties",t.parties],["dm",t.dmView],["combat",t.orderInit]]
-    :[["sheet",t.sheet],["combat",t.combat],["party",t.currentParty]];
+  const playerTabs=[["sheet",t.sheet],["combat",t.combat],["party",t.currentParty]];
+  const dmTabs=[["parties",t.parties],["dm",t.dmView],["combat",t.orderInit]];
+  const tabs=isDM?dmTabs:playerTabs;
+  const validScreens=(isDM?dmTabs:playerTabs).map(x=>x[0]);
+
+  // If the active screen is invalid for this role, redirect to default
+  useEffect(()=>{
+    if(!currentUser||screen==="loading"||screen==="auth") return;
+    if(!validScreens.includes(screen)){
+      setScreen(isDM?"parties":"sheet");
+    }
+  },[currentUser,isDM,screen]);
   const pb  = char ? profBonus(char.level||1) : 2;
   const atk = char ? getAttackBonus(char) : 0;
   const dc  = char ? getSpellSaveDC(char) : 10;
