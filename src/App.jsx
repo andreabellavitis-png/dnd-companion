@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { db, auth } from "./firebase";
 import {
-  doc, setDoc, getDoc, getDocs, collection, onSnapshot
+  doc, setDoc, getDoc, getDocs, collection, query, where, deleteDoc
 } from "firebase/firestore";
 import {
   createUserWithEmailAndPassword,
@@ -54,7 +54,8 @@ const SKILLS = [
 const profBonus = (level) => Math.ceil(level / 4) + 1;
 const mod     = (score) => Math.floor((score - 10) / 2);
 const modStr  = (n)     => n >= 0 ? `+${n}` : `${n}`;
-const uid     = ()      => Math.random().toString(36).slice(2,9);
+const uid          = ()      => Math.random().toString(36).slice(2,9);
+const genInviteCode = ()      => Math.random().toString(36).slice(2,8).toUpperCase();
 
 const DEFAULT_CHAR = {
   id:"", name:"Hero", class:"Fighter", race:"Human", level:1,
@@ -68,7 +69,7 @@ const DEFAULT_CHAR = {
   inventory:[], abilities:[], spells:[],
   conditions:[], concentration:false, notes:"",
   actions:{action:false,bonusAction:false,reaction:false,freeAction:false,movement:false},
-  role:"player",
+  role:"player", partyId:null,
 };
 
 // ─── FIREBASE HELPERS ─────────────────────────────────────────────────────────
@@ -90,6 +91,35 @@ const saveUserProfile = async (uid, data) => {
 const loadUserProfile = async (uid) => {
   const snap = await getDoc(doc(db, "users", uid));
   return snap.exists() ? snap.data() : null;
+};
+
+// ─── PARTY HELPERS ────────────────────────────────────────────────────────────
+const createParty = async (dmUid, partyName) => {
+  const partyId    = uid();
+  const inviteCode = genInviteCode();
+  const party = { id:partyId, name:partyName, dmUid, inviteCode, members:[], createdAt:Date.now() };
+  await setDoc(doc(db,"parties",partyId), party);
+  return party;
+};
+const loadParty = async (partyId) => {
+  const s = await getDoc(doc(db,"parties",partyId));
+  return s.exists() ? s.data() : null;
+};
+const saveParty = async (party) => { await setDoc(doc(db,"parties",party.id), party); };
+const loadDmParties = async (dmUid) => {
+  const q    = query(collection(db,"parties"), where("dmUid","==",dmUid));
+  const snap = await getDocs(q);
+  return snap.docs.map(d=>d.data());
+};
+const findPartyByCode = async (code) => {
+  const q    = query(collection(db,"parties"), where("inviteCode","==",code.toUpperCase()));
+  const snap = await getDocs(q);
+  return snap.empty ? null : snap.docs[0].data();
+};
+const loadPartyMembers = async (memberUids) => {
+  if(!memberUids||memberUids.length===0) return [];
+  const chars = await Promise.all(memberUids.map(u=>loadCharFromDb(u)));
+  return chars.filter(Boolean);
 };
 
 // ─── COMPUTED BONUSES ─────────────────────────────────────────────────────────
@@ -276,6 +306,20 @@ const css = `
   .dm-back-btn:hover{border-color:var(--accent2);color:var(--accent2);}
   .char-card-clickable{cursor:pointer;transition:border 0.2s,transform 0.15s;}
   .char-card-clickable:hover{border-color:var(--accent);transform:translateY(-2px);}
+  .badge-green{background:rgba(39,174,96,0.15);color:#2ecc71;border:1px solid rgba(39,174,96,0.3);}
+  .party-list{display:flex;flex-direction:column;gap:10px;margin-bottom:16px;}
+  .party-item{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:border 0.2s;}
+  .party-item:hover{border-color:var(--accent);}
+  .party-item.active{border-color:var(--accent);background:rgba(200,150,62,0.06);}
+  .party-item-name{font-family:"Cinzel",serif;font-size:1rem;color:var(--accent);flex:1;}
+  .party-item-meta{font-size:0.78rem;color:var(--muted);}
+  .invite-code-box{background:var(--bg);border:2px dashed var(--accent2);border-radius:10px;padding:16px;text-align:center;margin:12px 0;}
+  .invite-code{font-family:"Cinzel",serif;font-size:2rem;font-weight:700;color:var(--accent2);letter-spacing:8px;}
+  .invite-hint{font-size:0.78rem;color:var(--muted);margin-top:6px;}
+  .member-list{display:flex;flex-direction:column;gap:6px;}
+  .member-row{display:flex;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;}
+  .member-name{flex:1;font-size:0.9rem;font-weight:700;}
+  .member-class{font-size:0.78rem;color:var(--muted);}
   @media(max-width:640px){
     .stat-grid{grid-template-columns:repeat(3,1fr);}
     .action-row{grid-template-columns:repeat(3,1fr);}
@@ -531,6 +575,229 @@ function UseModal({lang,item,type,char,onConfirm,onClose}){
   );
 }
 
+
+// ─── PARTY MANAGEMENT (DM) ────────────────────────────────────────────────────
+function DmPartyManager({lang, currentUser, onSelectParty, activePartyId}){
+  const t=T[lang];
+  const [parties,setParties]       = useState([]);
+  const [loading,setLoading]       = useState(true);
+  const [showCreate,setShowCreate] = useState(false);
+  const [newName,setNewName]       = useState("");
+  const [copiedId,setCopiedId]     = useState(null);
+  const [selected,setSelected]     = useState(null);
+  const [members,setMembers]       = useState([]);
+
+  const refresh = useCallback(async()=>{
+    const ps = await loadDmParties(currentUser.uid);
+    ps.sort((a,b)=>b.createdAt-a.createdAt);
+    setParties(ps); setLoading(false);
+  },[currentUser.uid]);
+
+  useEffect(()=>{ refresh(); },[refresh]);
+
+  useEffect(()=>{
+    if(!selected) return;
+    loadPartyMembers(selected.members||[]).then(setMembers);
+  },[selected]);
+
+  const handleCreate = async()=>{
+    if(!newName.trim()) return;
+    const party = await createParty(currentUser.uid, newName.trim());
+    setNewName(""); setShowCreate(false);
+    await refresh();
+    setSelected(party);
+  };
+  const handleCopy = (code,id)=>{
+    navigator.clipboard.writeText(code);
+    setCopiedId(id);
+    setTimeout(()=>setCopiedId(null),2000);
+  };
+  const handleKick = async(memberUid)=>{
+    const updated={...selected,members:(selected.members||[]).filter(m=>m!==memberUid)};
+    await saveParty(updated);
+    const c=await loadCharFromDb(memberUid);
+    if(c) await saveCharToDb(memberUid,{...c,partyId:null});
+    setSelected(updated);
+    setMembers(prev=>prev.filter(m=>m.id!==memberUid));
+  };
+  const handleDelete = async()=>{
+    if(!window.confirm(t.confirmDeleteParty)) return;
+    for(const mUid of (selected.members||[])){
+      const c=await loadCharFromDb(mUid);
+      if(c) await saveCharToDb(mUid,{...c,partyId:null});
+    }
+    await deleteDoc(doc(db,"parties",selected.id));
+    setSelected(null); setMembers([]); refresh();
+  };
+
+  if(loading) return <div style={{color:"var(--muted)",padding:20}}>{lang==="it"?"Caricamento...":"Loading..."}</div>;
+
+  return(
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <h2 style={{fontFamily:"Cinzel,serif",color:"var(--accent)",fontSize:"1.1rem"}}>{t.myParties}</h2>
+        <button className="btn btn-primary btn-sm" onClick={()=>setShowCreate(true)}>+ {t.createParty}</button>
+      </div>
+      {showCreate&&(
+        <div className="card" style={{marginBottom:12}}>
+          <div className="field" style={{marginBottom:10}}>
+            <label>{t.partyName}</label>
+            <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder={lang==="it"?"La Confraternita...":"Fellowship..."} autoFocus onKeyDown={e=>e.key==="Enter"&&handleCreate()}/>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button className="btn btn-ghost btn-sm" onClick={()=>{setShowCreate(false);setNewName("");}}>{t.cancel}</button>
+            <button className="btn btn-primary btn-sm" onClick={handleCreate}>{t.createParty}</button>
+          </div>
+        </div>
+      )}
+      {parties.length===0&&!showCreate&&<p style={{color:"var(--muted)",fontSize:"0.9rem",marginBottom:16}}>{t.noParties}</p>}
+      <div className="party-list">
+        {parties.map(p=>(
+          <div key={p.id} className={`party-item ${selected?.id===p.id?"active":""}`} onClick={()=>setSelected(p)}>
+            <div style={{flex:1}}>
+              <div className="party-item-name">{p.name}</div>
+              <div className="party-item-meta">{(p.members||[]).length} {lang==="it"?"giocatori":"players"} · {lang==="it"?"Codice:":"Code:"} <strong style={{color:"var(--accent2)"}}>{p.inviteCode}</strong></div>
+            </div>
+            {activePartyId===p.id&&<span className="badge badge-green">{lang==="it"?"Attivo":"Active"}</span>}
+          </div>
+        ))}
+      </div>
+      {selected&&(
+        <div className="card">
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16,flexWrap:"wrap",gap:8}}>
+            <h3 style={{fontFamily:"Cinzel,serif",color:"var(--accent)"}}>{selected.name}</h3>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button className="btn btn-primary btn-sm" onClick={()=>onSelectParty(selected)}>{lang==="it"?"Usa in combattimento ⚔":"Use in Combat ⚔"}</button>
+              <button className="btn btn-danger btn-sm" onClick={handleDelete}>{t.deleteParty}</button>
+            </div>
+          </div>
+          <div className="invite-code-box">
+            <div style={{fontSize:"0.7rem",color:"var(--muted)",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>{t.inviteCode}</div>
+            <div className="invite-code">{selected.inviteCode}</div>
+            <div className="invite-hint">{lang==="it"?"Condividi questo codice con i tuoi giocatori":"Share this code with your players"}</div>
+            <button className="btn btn-ghost btn-sm" style={{marginTop:10}} onClick={()=>handleCopy(selected.inviteCode,selected.id)}>
+              {copiedId===selected.id?t.codeCopied:t.copyCode}
+            </button>
+          </div>
+          <div style={{marginTop:16}}>
+            <div style={{fontSize:"0.75rem",color:"var(--muted)",textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>{t.members}</div>
+            {members.length===0
+              ?<p style={{color:"var(--muted)",fontSize:"0.85rem"}}>{t.noMembers}</p>
+              :<div className="member-list">
+                {members.map(m=>(
+                  <div key={m.id} className="member-row">
+                    <div style={{flex:1}}>
+                      <div className="member-name">{m.name}</div>
+                      <div className="member-class">{m.race} · {m.class} · Lv {m.level}</div>
+                    </div>
+                    <div style={{width:80}}><HpBar current={m.hp?.current||0} max={m.hp?.max||1}/></div>
+                    <span style={{fontSize:"0.8rem",color:"var(--muted)",minWidth:55,textAlign:"center"}}>{m.hp?.current||0}/{m.hp?.max||0}</span>
+                    <button className="btn btn-danger btn-sm" onClick={()=>handleKick(m.id)}>{t.kickPlayer}</button>
+                  </div>
+                ))}
+              </div>
+            }
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── PLAYER PARTY PANEL ───────────────────────────────────────────────────────
+function PlayerPartyPanel({lang, currentUser, char, onCharUpdate}){
+  const t=T[lang];
+  const [codeInput,setCodeInput] = useState("");
+  const [joinError,setJoinError] = useState("");
+  const [joining,setJoining]     = useState(false);
+  const [party,setParty]         = useState(null);
+  const [members,setMembers]     = useState([]);
+  const [loading,setLoading]     = useState(true);
+
+  const refresh = useCallback(async()=>{
+    if(char?.partyId){
+      const p=await loadParty(char.partyId);
+      setParty(p||null);
+      if(p){ const ms=await loadPartyMembers(p.members||[]); setMembers(ms); }
+    } else { setParty(null); setMembers([]); }
+    setLoading(false);
+  },[char?.partyId]);
+
+  useEffect(()=>{ refresh(); },[refresh]);
+
+  const handleJoin=async()=>{
+    if(!codeInput.trim()) return;
+    setJoining(true); setJoinError("");
+    const found=await findPartyByCode(codeInput.trim());
+    if(!found){ setJoinError(t.joinError); setJoining(false); return; }
+    const updated={...found,members:[...new Set([...(found.members||[]),currentUser.uid])]};
+    await saveParty(updated);
+    const updatedChar={...char,partyId:found.id};
+    await saveCharToDb(currentUser.uid,updatedChar);
+    onCharUpdate(updatedChar);
+    setCodeInput(""); setJoining(false); refresh();
+  };
+
+  const handleLeave=async()=>{
+    if(!window.confirm(t.confirmLeave)) return;
+    if(party){
+      const updated={...party,members:(party.members||[]).filter(m=>m!==currentUser.uid)};
+      await saveParty(updated);
+    }
+    const updatedChar={...char,partyId:null};
+    await saveCharToDb(currentUser.uid,updatedChar);
+    onCharUpdate(updatedChar);
+    setParty(null); setMembers([]);
+  };
+
+  if(loading) return <div style={{color:"var(--muted)",padding:20}}>{lang==="it"?"Caricamento...":"Loading..."}</div>;
+
+  return(
+    <div>
+      {!party?(
+        <div className="card">
+          <div className="card-title">{t.joinParty}</div>
+          <p style={{color:"var(--muted)",fontSize:"0.85rem",marginBottom:16}}>{t.noParty}</p>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <input
+              style={{flex:1,minWidth:140,background:"var(--bg)",border:"1px solid var(--border)",color:"var(--text)",padding:"10px 14px",borderRadius:8,fontFamily:"Lato,sans-serif",fontSize:"0.95rem",outline:"none",textTransform:"uppercase",letterSpacing:4,fontWeight:700}}
+              value={codeInput} onChange={e=>setCodeInput(e.target.value.toUpperCase())}
+              placeholder="ABCDEF" maxLength={6} onKeyDown={e=>e.key==="Enter"&&handleJoin()}
+            />
+            <button className="btn btn-primary" onClick={handleJoin} style={{opacity:joining?0.6:1}}>
+              {joining?(lang==="it"?"...":"..."):`⚔ ${t.joinBtn}`}
+            </button>
+          </div>
+          {joinError&&<div style={{color:"#e74c3c",fontSize:"0.85rem",marginTop:8}}>{joinError}</div>}
+        </div>
+      ):(
+        <div className="card">
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
+            <div>
+              <div className="card-title" style={{marginBottom:2}}>{t.currentParty}</div>
+              <div style={{fontFamily:"Cinzel,serif",fontSize:"1.2rem",color:"var(--accent)"}}>{party.name}</div>
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={handleLeave}>{t.leaveParty}</button>
+          </div>
+          <div style={{fontSize:"0.75rem",color:"var(--muted)",textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>{t.partyMembers}</div>
+          <div className="member-list">
+            {members.map(m=>(
+              <div key={m.id} className="member-row">
+                <div style={{flex:1}}>
+                  <div className="member-name">{m.name}{m.id===currentUser.uid&&<span style={{fontSize:"0.7rem",color:"var(--muted)",marginLeft:6}}>(tu)</span>}</div>
+                  <div className="member-class">{m.race} · {m.class} · Lv {m.level}</div>
+                </div>
+                <div style={{width:80}}><HpBar current={m.hp?.current||0} max={m.hp?.max||1}/></div>
+                <span style={{fontSize:"0.8rem",color:"var(--muted)",minWidth:55,textAlign:"center"}}>{m.hp?.current||0}/{m.hp?.max||0} HP</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App(){
   const [lang,setLang]                     = useState("it");
@@ -550,6 +817,7 @@ export default function App(){
   const [useModal,setUseModal]             = useState(null);
   const [reactivateModal,setReactivateModal] = useState(null);
   const [dmViewChar,setDmViewChar]           = useState(null); // { id, data } — which player the DM is inspecting
+  const [activeParty,setActiveParty]         = useState(null); // party currently selected by DM for overview/combat
   const [invInput,setInvInput]             = useState("");
   const [hpInput,setHpInput]               = useState("");
   const [hpMode,setHpMode]                 = useState("heal");
@@ -566,7 +834,7 @@ export default function App(){
           setCurrentUser(user);
           const c = await loadCharFromDb(firebaseUser.uid);
           if(c) setChar(c);
-          setScreen(profile.role==="dm"?"dm":"sheet");
+          setScreen(profile.role==="dm"?"parties":"sheet");
         } else {
           // Profile not saved yet — edge case, go to auth
           setScreen("auth");
@@ -582,13 +850,18 @@ export default function App(){
 
   // ── Load all chars (DM + combat)
   const loadAllChars = useCallback(async()=>{
-    const chars = await loadAllCharsFromDb();
+    if(!activeParty){ setAllChars([]); return; }
+    const chars = await loadPartyMembers(activeParty.members||[]);
     setAllChars(chars);
-  },[]);
+  },[activeParty]);
 
   useEffect(()=>{
-    if(screen==="dm"||screen==="combat") loadAllChars();
-  },[screen,loadAllChars]);
+    if((screen==="dm"||screen==="combat")&&activeParty) loadAllChars();
+    // For players in combat, load their party members
+    if(screen==="combat"&&!isDM&&char?.partyId){
+      loadParty(char.partyId).then(p=>{ if(p) loadPartyMembers(p.members||[]).then(setAllChars); });
+    }
+  },[screen,activeParty,loadAllChars,char?.partyId]);
 
   // ── Polling every 5s for real-time feel
   useEffect(()=>{
@@ -597,6 +870,10 @@ export default function App(){
       if(screen==="dm"||screen==="combat") loadAllChars();
       if(currentUser.role==="player"){
         loadCharFromDb(currentUser.uid).then(c=>{ if(c) setChar(c); });
+      }
+      // Player in combat: also refresh party members for initiative
+      if(currentUser.role==="player"&&(screen==="combat")&&char?.partyId){
+        loadParty(char.partyId).then(p=>{ if(p) loadPartyMembers(p.members||[]).then(setAllChars); });
       }
       // if DM is inspecting a player, refresh that char too
       if(currentUser.role==="dm"){
@@ -608,7 +885,7 @@ export default function App(){
       }
     },5000);
     return ()=>clearInterval(iv);
-  },[currentUser,screen,loadAllChars]);
+  },[currentUser,screen,activeParty,loadAllChars]);
 
   const saveChar = async(updated)=>{
     setChar(updated);
@@ -638,7 +915,7 @@ export default function App(){
         const nc = { ...DEFAULT_CHAR, id:cred.user.uid, name:displayNameInput.trim(), role:roleInput };
         await saveCharToDb(cred.user.uid, nc);
         setCurrentUser(user); setChar(nc);
-        setScreen(roleInput==="dm"?"dm":"sheet");
+        setScreen(roleInput==="dm"?"parties":"sheet");
       } else {
         await signInWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
         // onAuthStateChanged handles the rest
@@ -698,7 +975,9 @@ export default function App(){
 
   const isDM=currentUser?.role==="dm";
   const condArr=lang==="it"?CONDITIONS_IT:CONDITIONS_EN;
-  const tabs=isDM?[["dm",t.dmView],["combat",t.orderInit]]:[["sheet",t.sheet],["combat",t.combat]];
+  const tabs=isDM
+    ?[["parties",t.parties],["dm",t.dmView],["combat",t.orderInit]]
+    :[["sheet",t.sheet],["combat",t.combat],["party",t.currentParty]];
   const pb  = char ? profBonus(char.level||1) : 2;
   const atk = char ? getAttackBonus(char) : 0;
   const dc  = char ? getSpellSaveDC(char) : 10;
@@ -753,12 +1032,33 @@ export default function App(){
       <div className="app">
         <nav className="nav">
           <span className="nav-brand">⚔ {t.appName}</span>
-          <div className="nav-tabs">{tabs.map(([id,lbl])=><button key={id} className={`nav-tab ${screen===id?"active":""}`} onClick={()=>setScreen(id)}>{lbl}</button>)}</div>
+          <div className="nav-tabs">{tabs.map(([id,lbl])=><button key={id} className={`nav-tab ${screen===id?"active":""}`} onClick={()=>{ setScreen(id); setDmViewChar(null); }}>{lbl}</button>)}</div>
+          {isDM&&activeParty&&<span style={{fontSize:"0.75rem",color:"var(--accent2)",fontWeight:700,border:"1px solid rgba(123,94,167,0.4)",borderRadius:6,padding:"3px 8px",whiteSpace:"nowrap"}}>⚔ {activeParty.name}</span>}
           <button className="lang-btn" style={{marginRight:8}} onClick={()=>setLang(l=>l==="en"?"it":"en")}>{lang==="en"?"IT":"EN"}</button>
           <button className="btn btn-ghost btn-sm" onClick={logout}>{t.logout}</button>
         </nav>
 
         <main className="main">
+
+          {/* ══ PARTIES (DM) ══ */}
+          {screen==="parties"&&isDM&&(
+            <DmPartyManager
+              lang={lang}
+              currentUser={currentUser}
+              activePartyId={activeParty?.id}
+              onSelectParty={(party)=>{ setActiveParty(party); setScreen("dm"); }}
+            />
+          )}
+
+          {/* ══ PARTY (PLAYER) ══ */}
+          {screen==="party"&&!isDM&&(
+            <PlayerPartyPanel
+              lang={lang}
+              currentUser={currentUser}
+              char={char}
+              onCharUpdate={(updated)=>setChar(updated)}
+            />
+          )}
 
           {/* ══ SHEET ══ */}
           {screen==="sheet"&&(
@@ -1023,10 +1323,11 @@ export default function App(){
             </div>
           </>)}
 
-          {screen==="combat"&&(
+          {screen==="combat"&&char&&(
             <div className="card">
               <div className="card-title">{t.orderInit}</div>
-              {allChars.length===0?<p style={{color:"var(--muted)",fontSize:"0.9rem"}}>{t.noChars}</p>
+              {allChars.length===0
+                ?<p style={{color:"var(--muted)",fontSize:"0.9rem"}}>{isDM?(lang==="it"?"Nessun giocatore nel party":"No players in party"):(lang==="it"?"Non sei in nessun party. Unisciti da 'Il Tuo Party'.":"Not in a party. Join from 'Your Party'.")}</p>
                 :<div className="init-list">
                   {[...allChars].sort((a,b)=>(b.initiative||0)-(a.initiative||0)).map(c=>(
                     <div key={c.id} className="init-item" style={c.id===currentUser?.uid?{borderColor:"var(--accent)"}:{}}>
@@ -1289,36 +1590,46 @@ export default function App(){
 
           {/* ══ DM VIEW ══ */}
           {screen==="dm"&&!dmViewChar&&(<>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-              <h2 style={{fontFamily:"Cinzel,serif",color:"var(--accent)"}}>{t.allChars}</h2>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <h2 style={{fontFamily:"Cinzel,serif",color:"var(--accent)"}}>{activeParty?activeParty.name:t.allChars}</h2>
               <button className="btn btn-ghost btn-sm" onClick={loadAllChars}>{lang==="it"?"Aggiorna":"Refresh"}</button>
             </div>
-            <p style={{color:"var(--muted)",fontSize:"0.82rem",marginBottom:12}}>🖊 {lang==="it"?"Clicca su un personaggio per aprirne la scheda":"Click a character card to open their full sheet"}</p>
-            {allChars.filter(c=>c.role!=="dm").length===0?<p style={{color:"var(--muted)"}}>{t.noChars}</p>
-              :<div className="char-cards">
-                {allChars.filter(c=>c.role!=="dm").map(c=>(
-                  <div key={c.id} className="char-card char-card-clickable" onClick={()=>setDmViewChar({id:c.id,data:c})}>
-                    <div className="char-card-name">{c.name}</div>
-                    <div className="char-card-sub">{c.race} · {c.class} · Lv {c.level}</div>
-                    <HpBar current={c.hp.current} max={c.hp.max}/>
-                    <div style={{fontSize:"0.85rem",margin:"6px 0"}}>{c.hp.current}/{c.hp.max} HP{c.hp.temp>0?` (+${c.hp.temp})`:""}</div>
-                    <div className="char-card-stats">
-                      <div className="char-card-stat"><div className="char-card-stat-val">{c.ac}</div><div className="char-card-stat-label">{t.ac}</div></div>
-                      <div className="char-card-stat"><div className="char-card-stat-val">{c.initiative>=0?"+":""}{c.initiative}</div><div className="char-card-stat-label">Init</div></div>
-                      <div className="char-card-stat"><div className="char-card-stat-val">{modStr(profBonus(c.level||1))}</div><div className="char-card-stat-label">Prof</div></div>
-                      <div className="char-card-stat"><div className="char-card-stat-val">{getSpellSaveDC(c)}</div><div className="char-card-stat-label">DC</div></div>
-                    </div>
-                    {c.conditions?.length>0&&<div className="badges" style={{marginTop:8}}>{c.conditions.map(cond=><span key={cond} className="badge badge-red">{lang==="it"?CONDITIONS_IT[CONDITIONS_EN.indexOf(cond)]:cond}</span>)}</div>}
-                    {c.concentration&&<span className="badge badge-purple" style={{marginTop:6,display:"inline-block"}}>{t.conc}</span>}
-                    {ACTION_KEYS.some(k=>c.actions?.[k])&&(
-                      <div className="badges" style={{marginTop:8}}>
-                        {ACTION_KEYS.map((k,i)=>c.actions?.[k]?<span key={k} className="badge" style={{background:"rgba(192,57,43,0.12)",color:"#e74c3c",border:"1px solid rgba(192,57,43,0.3)"}}>{lang==="it"?ACTION_TYPES_IT[i]:ACTION_TYPES_EN[i]}</span>:null)}
-                      </div>
-                    )}
-                  </div>
-                ))}
+            {!activeParty?(
+              <div className="card">
+                <p style={{color:"var(--muted)",marginBottom:12}}>{lang==="it"?"Seleziona un party dalla scheda Party per visualizzare i personaggi.":"Select a party from the Parties tab to view characters."}</p>
+                <button className="btn btn-primary btn-sm" onClick={()=>setScreen("parties")}>{t.parties}</button>
               </div>
-            }
+            ):(
+              <>
+                <p style={{color:"var(--muted)",fontSize:"0.82rem",marginBottom:12}}>🖊 {lang==="it"?"Clicca su un personaggio per aprirne la scheda":"Click a character card to open their full sheet"}</p>
+                {allChars.filter(c=>c.role!=="dm").length===0
+                  ?<p style={{color:"var(--muted)"}}>{t.noChars}</p>
+                  :<div className="char-cards">
+                    {allChars.filter(c=>c.role!=="dm").map(c=>(
+                      <div key={c.id} className="char-card char-card-clickable" onClick={()=>setDmViewChar({id:c.id,data:c})}>
+                        <div className="char-card-name">{c.name}</div>
+                        <div className="char-card-sub">{c.race} · {c.class} · Lv {c.level}</div>
+                        <HpBar current={c.hp.current} max={c.hp.max}/>
+                        <div style={{fontSize:"0.85rem",margin:"6px 0"}}>{c.hp.current}/{c.hp.max} HP{c.hp.temp>0?` (+${c.hp.temp})`:""}</div>
+                        <div className="char-card-stats">
+                          <div className="char-card-stat"><div className="char-card-stat-val">{c.ac}</div><div className="char-card-stat-label">{t.ac}</div></div>
+                          <div className="char-card-stat"><div className="char-card-stat-val">{c.initiative>=0?"+":""}{c.initiative}</div><div className="char-card-stat-label">Init</div></div>
+                          <div className="char-card-stat"><div className="char-card-stat-val">{modStr(profBonus(c.level||1))}</div><div className="char-card-stat-label">Prof</div></div>
+                          <div className="char-card-stat"><div className="char-card-stat-val">{getSpellSaveDC(c)}</div><div className="char-card-stat-label">DC</div></div>
+                        </div>
+                        {c.conditions?.length>0&&<div className="badges" style={{marginTop:8}}>{c.conditions.map(cond=><span key={cond} className="badge badge-red">{lang==="it"?CONDITIONS_IT[CONDITIONS_EN.indexOf(cond)]:cond}</span>)}</div>}
+                        {c.concentration&&<span className="badge badge-purple" style={{marginTop:6,display:"inline-block"}}>{t.conc}</span>}
+                        {ACTION_KEYS.some(k=>c.actions?.[k])&&(
+                          <div className="badges" style={{marginTop:8}}>
+                            {ACTION_KEYS.map((k,i)=>c.actions?.[k]?<span key={k} className="badge" style={{background:"rgba(192,57,43,0.12)",color:"#e74c3c",border:"1px solid rgba(192,57,43,0.3)"}}>{lang==="it"?ACTION_TYPES_IT[i]:ACTION_TYPES_EN[i]}</span>:null)}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                }
+              </>
+            )}
           </>)}
 
         </main>
