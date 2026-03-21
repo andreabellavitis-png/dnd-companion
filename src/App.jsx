@@ -500,14 +500,22 @@ function CreateCharModal({lang,char,onSave,onClose}){
     </div>
   );
 }
-function AddAbilityModal({lang,type,onSave,onClose}){
+function AddAbilityModal({lang,type,onSave,onClose,existing}){
   const t=T[lang]; const isSpell=type==="spell";
-  const [form,setForm]=useState({name:"",desc:"",actionType:"action",spellLevel:1});
+  const isEdit=!!existing;
+  const [form,setForm]=useState(existing
+    ?{name:existing.name||"",desc:existing.desc||"",actionType:existing.actionType||"action",spellLevel:existing.spellLevel??1}
+    :{name:"",desc:"",actionType:"action",spellLevel:1}
+  );
   const set=(k,v)=>setForm(f=>({...f,[k]:v}));
+  const handleSave=()=>{
+    if(!form.name) return;
+    onSave({...form, id:existing?.id||uid(), spellLevel:Number(form.spellLevel)});
+  };
   return(
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={e=>e.stopPropagation()}>
-        <h3>{isSpell?t.addSpell:t.addAbility}</h3>
+        <h3>{isEdit?(isSpell?t.editSpell:t.editAbility):(isSpell?t.addSpell:t.addAbility)}</h3>
         <div className="field"><label>{isSpell?t.spellName:t.abilityName}</label><input value={form.name} onChange={e=>set("name",e.target.value)} placeholder={isSpell?"Fireball":"Second Wind"} autoFocus/></div>
         <div className="field"><label>{t.description}</label><textarea value={form.desc} onChange={e=>set("desc",e.target.value)}/></div>
         <div className="field"><label>{t.actionRequired}</label>
@@ -523,7 +531,7 @@ function AddAbilityModal({lang,type,onSave,onClose}){
         </div>}
         <div className="modal-actions">
           <button className="btn btn-ghost" onClick={onClose}>{t.cancel}</button>
-          <button className="btn btn-primary" onClick={()=>form.name&&onSave({...form,id:uid()})}>{t.save}</button>
+          <button className="btn btn-primary" onClick={handleSave}>{t.save}</button>
         </div>
       </div>
     </div>
@@ -814,6 +822,7 @@ export default function App(){
   const [editStat,setEditStat]             = useState(null);
   const [showCreateChar,setShowCreateChar] = useState(false);
   const [showAddModal,setShowAddModal]     = useState(false);
+  const [editModal,setEditModal]           = useState(null); // {type,item} when editing existing
   const [useModal,setUseModal]             = useState(null);
   const [reactivateModal,setReactivateModal] = useState(null);
   const [dmViewChar,setDmViewChar]           = useState(null); // { id, data } — which player the DM is inspecting
@@ -959,6 +968,7 @@ export default function App(){
     setShowAddModal(false);
   };
   const removeEntry=(type,id)=>{ if(type==="ability") saveChar({...char,abilities:(char.abilities||[]).filter(a=>a.id!==id)}); else saveChar({...char,spells:(char.spells||[]).filter(s=>s.id!==id)}); };
+  const editEntry=(type,updated)=>{ if(type==="ability") saveChar({...char,abilities:(char.abilities||[]).map(a=>a.id===updated.id?updated:a)}); else saveChar({...char,spells:(char.spells||[]).map(s=>s.id===updated.id?updated:s)}); };
   const updateSpellSlot=(lv,used)=>saveChar({...char,spellSlotsUsed:{...char.spellSlotsUsed,[lv]:Math.max(0,Math.min(char.spellSlots[lv],used))}});
   const toggleSkillProf=(key)=>saveChar({...char,skillProfs:{...char.skillProfs,[key]:!char.skillProfs?.[key]}});
   const toggleSaveProf=(stat)=>saveChar({...char,savingThrowProfs:{...char.savingThrowProfs,[stat]:!char.savingThrowProfs?.[stat]}});
@@ -1166,7 +1176,7 @@ export default function App(){
                   :<div className="ability-list">{(char.abilities||[]).map(a=>(
                     <div key={a.id} className="ability-card">
                       <div className="ability-card-info"><div className="ability-card-name">{a.name}</div>{a.desc&&<div className="ability-card-desc">{a.desc}</div>}</div>
-                      <div className="ability-card-meta"><ActionTag actionKey={a.actionType} lang={lang}/><button style={{background:"none",border:"none",color:"var(--red)",cursor:"pointer",fontSize:"1.1rem"}} onClick={()=>removeEntry("ability",a.id)}>×</button></div>
+                      <div className="ability-card-meta"><ActionTag actionKey={a.actionType} lang={lang}/><button style={{background:"none",border:"none",color:"var(--muted)",cursor:"pointer",fontSize:"1rem",marginLeft:4}} onClick={()=>setEditModal({type:"ability",item:a})} title={t.editAbility}>✎</button><button style={{background:"none",border:"none",color:"var(--red)",cursor:"pointer",fontSize:"1.1rem"}} onClick={()=>removeEntry("ability",a.id)}>×</button></div>
                     </div>
                   ))}</div>
                 }
@@ -1181,6 +1191,7 @@ export default function App(){
                       <div className="ability-card-meta">
                         <span style={{fontSize:"0.7rem",color:"var(--accent2)",fontWeight:700,background:"rgba(123,94,167,0.12)",padding:"3px 8px",borderRadius:99,border:"1px solid rgba(123,94,167,0.25)"}}>{s.spellLevel===0?(lang==="it"?"Trucchetto":"Cantrip"):`Lv ${s.spellLevel}`}</span>
                         <ActionTag actionKey={s.actionType} lang={lang}/>
+                        <button style={{background:"none",border:"none",color:"var(--muted)",cursor:"pointer",fontSize:"1rem",marginLeft:4}} onClick={()=>setEditModal({type:"spell",item:s})} title={t.editSpell}>✎</button>
                         <button style={{background:"none",border:"none",color:"var(--red)",cursor:"pointer",fontSize:"1.1rem"}} onClick={()=>removeEntry("spell",s.id)}>×</button>
                       </div>
                     </div>
@@ -1647,6 +1658,7 @@ export default function App(){
       {editStat&&<EditStatModal stat={editStat} value={char.stats[editStat]} lang={lang} onSave={v=>updateStat(editStat,v)} onClose={()=>setEditStat(null)}/>}
       {showCreateChar&&<CreateCharModal lang={lang} char={char} onSave={handleCreateChar} onClose={()=>setShowCreateChar(false)}/>}
       {showAddModal&&<AddAbilityModal lang={lang} type={showAddModal} onSave={item=>addEntry(showAddModal,item)} onClose={()=>setShowAddModal(false)}/>}
+      {editModal&&<AddAbilityModal lang={lang} type={editModal.type} existing={editModal.item} onSave={item=>{editEntry(editModal.type,item);setEditModal(null);}} onClose={()=>setEditModal(null)}/>}
       {useModal&&<UseModal lang={lang} item={useModal.item} type={useModal.type} char={char} onConfirm={(slot)=>handleUseConfirm(useModal.item,useModal.type,slot)} onClose={()=>setUseModal(null)}/>}
       {reactivateModal&&(
         <div className="modal-overlay" onClick={()=>setReactivateModal(null)}>
