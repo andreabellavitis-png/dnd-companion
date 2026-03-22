@@ -257,6 +257,20 @@ const css = `
   .instance-row{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid rgba(192,57,43,0.3);border-radius:8px;padding:8px 12px;margin-bottom:6px;flex-wrap:wrap;}
   .instance-name{font-size:0.9rem;font-weight:700;color:#e74c3c;min-width:100px;}
   .vis-toggle{display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.75rem;color:var(--muted);white-space:nowrap;user-select:none;}
+  .avatar-portrait{width:120px;height:120px;border-radius:12px;object-fit:cover;border:2px solid var(--border);flex-shrink:0;}
+  .avatar-portrait-monster{width:120px;height:120px;border-radius:12px;object-fit:cover;border:2px solid rgba(192,57,43,0.5);flex-shrink:0;}
+  .avatar-placeholder{width:120px;height:120px;border-radius:12px;border:2px dashed var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;gap:6px;flex-shrink:0;transition:border 0.2s;background:var(--bg);}
+  .avatar-placeholder:hover{border-color:var(--accent);}
+  .avatar-placeholder-icon{font-size:2rem;opacity:0.3;}
+  .avatar-placeholder-text{font-size:0.65rem;color:var(--muted);text-align:center;padding:0 8px;}
+  .token{width:36px;height:36px;border-radius:50%;object-fit:cover;border:2px solid var(--border);flex-shrink:0;}
+  .token-monster{width:36px;height:36px;border-radius:50%;object-fit:cover;border:2px solid rgba(192,57,43,0.6);flex-shrink:0;}
+  .token-placeholder{width:36px;height:36px;border-radius:50%;border:2px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0;background:var(--bg);}
+  .img-picker-wrap{display:flex;flex-direction:column;gap:8px;}
+  .img-picker-tabs{display:flex;gap:6px;}
+  .img-picker-tab{background:var(--bg);border:1px solid var(--border);color:var(--muted);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:0.78rem;font-weight:700;}
+  .img-picker-tab.active{border-color:var(--accent);color:var(--accent);}
+  .img-picker-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
   @media(max-width:640px){
     .stat-grid{grid-template-columns:repeat(3,1fr);}
     .action-row{grid-template-columns:repeat(3,1fr);}
@@ -763,7 +777,9 @@ function DmMonsterLibrary({lang,currentUser,activeParty,onSetActiveParty,onOpenI
     const id=editing?.id||genId();
     const m={id,dmUid:currentUser.uid,name:form.name,type:form.type,hp:{max:form.hpMax},
       ac:form.ac,speed:form.speed,initiative:form.initiative,stats:form.stats,
-      abilities:editing?.abilities||[],notes:form.notes,createdAt:editing?.createdAt||Date.now()};
+      abilities:editing?.abilities||[],notes:form.notes,
+      portrait:editing?.portrait||"", token:editing?.token||"",
+      createdAt:editing?.createdAt||Date.now()};
     await saveMonsterToDb(m); setShowForm(false); setEditing(null); refresh();
   };
   const handleDelete=async(m)=>{
@@ -777,6 +793,7 @@ function DmMonsterLibrary({lang,currentUser,activeParty,onSetActiveParty,onOpenI
       hp:{current:m.hp.max,max:m.hp.max}, ac:m.ac, speed:m.speed||30,
       initiative:m.initiative||0, stats:{...m.stats}, abilities:[...(m.abilities||[])],
       conditions:[], visibleHp:false, notes:m.notes||"",
+      portrait:m.portrait||"", token:m.token||"",
     };
     const upd={...activeParty,combatMonsters:[...(activeParty.combatMonsters||[]),inst]};
     await saveParty(upd); onSetActiveParty(upd);
@@ -794,12 +811,21 @@ function DmMonsterLibrary({lang,currentUser,activeParty,onSetActiveParty,onOpenI
       <div className="char-cards">
         {monsters.map(m=>(
           <div key={m.id} className="monster-card">
+            {m.portrait&&<img src={m.portrait} alt={m.name} style={{width:"100%",height:100,objectFit:"cover",borderRadius:8,marginBottom:8}}/>}
             <div className="monster-card-name">{m.name}</div>
             <div className="monster-card-sub">{m.type||"—"} · {m.hp.max} HP · CA {m.ac}</div>
             <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
               <button className="btn btn-sm" style={{background:"var(--red)",color:"#fff",fontSize:"0.75rem"}} onClick={()=>handleAddToCombat(m)}>{t.addToCombat}</button>
               <button className="btn btn-ghost btn-sm" style={{fontSize:"0.75rem"}} onClick={()=>{setEditing(m);setShowForm(true);}}>✎</button>
               <button className="btn btn-ghost btn-sm" style={{fontSize:"0.75rem",color:"var(--red)"}} onClick={()=>handleDelete(m)}>×</button>
+            </div>
+            <div style={{marginTop:10,display:"flex",gap:12,flexWrap:"wrap"}}>
+              <ImagePicker lang={lang} value={m.portrait||""} isMonster={true}
+                label={t.portrait}
+                onChange={async v=>{ const upd={...m,portrait:v}; await saveMonsterToDb(upd); refresh(); }}/>
+              <ImagePicker lang={lang} value={m.token||""} isToken={true} isMonster={true}
+                label={t.token}
+                onChange={async v=>{ const upd={...m,token:v}; await saveMonsterToDb(upd); refresh(); }}/>
             </div>
           </div>
         ))}
@@ -834,6 +860,105 @@ function DmMonsterLibrary({lang,currentUser,activeParty,onSetActiveParty,onOpenI
         </div>
       )}
       {showForm&&<MonsterFormModal lang={lang} existing={editing} onSave={handleSave} onClose={()=>{setShowForm(false);setEditing(null);}}/>}
+    </div>
+  );
+}
+
+
+// ─── IMAGE HELPERS ────────────────────────────────────────────────────────────
+// Compress an image file to base64, max dimension 600px, quality 0.75
+const compressImage = (file, maxDim=600, quality=0.75) => new Promise((resolve,reject)=>{
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      let w=img.width, h=img.height;
+      if(w>h&&w>maxDim){ h=Math.round(h*maxDim/w); w=maxDim; }
+      else if(h>maxDim){ w=Math.round(w*maxDim/h); h=maxDim; }
+      canvas.width=w; canvas.height=h;
+      canvas.getContext("2d").drawImage(img,0,0,w,h);
+      resolve(canvas.toDataURL("image/jpeg",quality));
+    };
+    img.onerror=reject;
+    img.src=e.target.result;
+  };
+  reader.onerror=reject;
+  reader.readAsDataURL(file);
+});
+
+// Token compressor — smaller, square crop for initiative token
+const compressToken = (file) => compressImage(file, 200, 0.7);
+
+// ImagePicker: shows current image + lets user pick via upload or URL
+function ImagePicker({lang, value, onChange, label, isToken=false, isMonster=false}){
+  const t=T[lang];
+  const [tab,setTab]=useState("upload"); // "upload" | "url"
+  const [urlInput,setUrlInput]=useState("");
+  const [loading,setLoading]=useState(false);
+  const fileRef=useState(null);
+  const inputId=useState(()=>"img-"+Math.random().toString(36).slice(2,7))[0];
+
+  const handleFile=async(e)=>{
+    const file=e.target.files?.[0]; if(!file) return;
+    setLoading(true);
+    try{
+      const b64 = isToken ? await compressToken(file) : await compressImage(file);
+      onChange(b64);
+    } catch(err){ alert("Image error: "+err.message); }
+    setLoading(false);
+    e.target.value="";
+  };
+  const handleUrl=()=>{
+    if(!urlInput.trim()) return;
+    onChange(urlInput.trim()); setUrlInput("");
+  };
+  const imgClass = isToken ? (isMonster?"token-monster":"token") : (isMonster?"avatar-portrait-monster":"avatar-portrait");
+  const phClass  = isToken ? "token-placeholder" : "avatar-placeholder";
+
+  return(
+    <div className="img-picker-wrap">
+      <div style={{fontSize:"0.7rem",color:"var(--muted)",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{label}</div>
+      <div style={{display:"flex",gap:12,alignItems:"flex-start",flexWrap:"wrap"}}>
+        {/* Preview */}
+        <div>
+          {value
+            ?<img src={value} alt={label} className={imgClass} style={isToken?{cursor:"pointer"}:{}}/>
+            :<div className={phClass} style={isToken?{cursor:"default"}:{}} onClick={isToken?undefined:()=>document.getElementById(inputId)?.click()}>
+              {isToken
+                ?<span style={{fontSize:"1rem",opacity:0.3}}>?</span>
+                :<><span className="avatar-placeholder-icon">🖼</span><span className="avatar-placeholder-text">{t.imgUpload}</span></>
+              }
+            </div>
+          }
+        </div>
+        {/* Controls */}
+        <div style={{flex:1,minWidth:160}}>
+          <div className="img-picker-tabs">
+            <div className={`img-picker-tab ${tab==="upload"?"active":""}`} onClick={()=>setTab("upload")}>{t.imgUpload}</div>
+            <div className={`img-picker-tab ${tab==="url"?"active":""}`} onClick={()=>setTab("url")}>URL</div>
+          </div>
+          <div style={{marginTop:8}}>
+            {tab==="upload"&&(
+              <div className="img-picker-actions">
+                <input id={inputId} type="file" accept="image/*" style={{display:"none"}} onChange={handleFile}/>
+                <button className="btn btn-ghost btn-sm" onClick={()=>document.getElementById(inputId)?.click()} style={{opacity:loading?0.5:1}}>
+                  {loading?(lang==="it"?"...":"..."):`📂 ${value?t.imgChange:t.imgUpload}`}
+                </button>
+                {value&&<button className="btn btn-ghost btn-sm" style={{color:"var(--red)"}} onClick={()=>onChange("")}>× {t.imgRemove}</button>}
+              </div>
+            )}
+            {tab==="url"&&(
+              <div className="img-picker-actions">
+                <input style={{flex:1,minWidth:120,background:"var(--bg)",border:"1px solid var(--border)",color:"var(--text)",padding:"6px 10px",borderRadius:6,fontFamily:"Lato,sans-serif",fontSize:"0.85rem",outline:"none"}}
+                  value={urlInput} onChange={e=>setUrlInput(e.target.value)} placeholder={t.imgUrlPlaceholder} onKeyDown={e=>e.key==="Enter"&&handleUrl()}/>
+                <button className="btn btn-primary btn-sm" onClick={handleUrl}>{t.save}</button>
+                {value&&<button className="btn btn-ghost btn-sm" style={{color:"var(--red)"}} onClick={()=>onChange("")}>× {t.imgRemove}</button>}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -897,6 +1022,11 @@ function CharSheet({lang,char,isDmView,onSave,onBack,hpInput,setHpInput,invInput
       {/* Header */}
       <div className="card">
         <div className="char-header">
+          {/* Portrait */}
+          {char.portrait
+            ?<img src={char.portrait} alt={char.name} className="avatar-portrait"/>
+            :<div className="avatar-placeholder" onClick={()=>{}} style={{cursor:"default",opacity:0.4}}><span className="avatar-placeholder-icon">🧙</span></div>
+          }
           <div className="char-info">
             <div className="char-name" onClick={isDmView?undefined:()=>{}}>{char.name}</div>
             <div className="char-sub">{char.race} · {char.class} · Lv {char.level}</div>
@@ -916,6 +1046,13 @@ function CharSheet({lang,char,isDmView,onSave,onBack,hpInput,setHpInput,invInput
               </div>
             ))}
           </div>
+        </div>
+      </div>
+      {/* Image pickers — only show for player on their own sheet or DM viewing */}
+      <div className="card">
+        <div style={{display:"flex",gap:24,flexWrap:"wrap"}}>
+          <ImagePicker lang={lang} value={char.portrait||""} onChange={v=>save({...char,portrait:v})} label={t.portrait}/>
+          <ImagePicker lang={lang} value={char.token||""} onChange={v=>save({...char,token:v})} label={t.token} isToken={true}/>
         </div>
       </div>
       {/* Stats */}
@@ -1123,6 +1260,13 @@ function MonsterSheet({lang,inst,activeParty,onSave,onRemove,onBack}){
           </div>
           <button className="btn btn-danger btn-sm" onClick={()=>{if(window.confirm(t.removeFromCombat+"?")) onRemove(inst.instanceId);}}>{t.removeFromCombat}</button>
           <button className="dm-back-btn" onClick={onBack}>{t.backToDm}</button>
+        </div>
+      </div>
+      {/* Monster portrait + token */}
+      <div className="card">
+        <div style={{display:"flex",gap:24,flexWrap:"wrap"}}>
+          <ImagePicker lang={lang} value={inst.portrait||""} onChange={v=>onSave({...inst,portrait:v})} label={t.portrait} isMonster={true}/>
+          <ImagePicker lang={lang} value={inst.token||""} onChange={v=>onSave({...inst,token:v})} label={t.token} isToken={true} isMonster={true}/>
         </div>
       </div>
       {/* HP */}
@@ -1403,6 +1547,7 @@ export default function App(){
                     :<div className="char-cards">
                       {allChars.filter(c=>c.role!=="dm").map(c=>(
                         <div key={c.id} className="char-card char-card-clickable" onClick={()=>setDmViewChar({id:c.id,data:c})}>
+                          {c.portrait&&<img src={c.portrait} alt={c.name} style={{width:"100%",height:120,objectFit:"cover",borderRadius:8,marginBottom:8}}/>}
                           <div className="char-card-name">{c.name}</div>
                           <div className="char-card-sub">{c.race} · {c.class} · Lv {c.level}</div>
                           <HpBar current={c.hp.current} max={c.hp.max}/>
@@ -1516,6 +1661,11 @@ export default function App(){
                         <div key={c._type==="monster"?c.instanceId:c.id} className="init-item"
                           style={c.id===currentUser?.uid?{borderColor:"var(--accent)"}:c._type==="monster"?{borderColor:"rgba(192,57,43,0.4)"}:{}}>
                           <div className="init-num">{c.initiative>=0?"+":""}{c.initiative||0}</div>
+                          {/* Token image */}
+                          {c.token
+                            ?<img src={c.token} alt={c.name} className={c._type==="monster"?"token-monster":"token"}/>
+                            :<div className="token-placeholder" style={{fontSize:"0.8rem",color:"var(--muted)",opacity:0.4}}>{c._type==="monster"?"☠":"⚔"}</div>
+                          }
                           <div className="init-name" style={c._type==="monster"?{color:"#e74c3c"}:{}}>{c.name}</div>
                           {c._type==="monster"?(
                             isDM?(
