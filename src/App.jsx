@@ -971,6 +971,7 @@ function CharSheet({lang,char,isDmView,onSave,onBack,hpInput,setHpInput,invInput
   const [editAbility,setEditAbility]=useState(null);
   const [useModal,setUseModal]=useState(null);
   const [reactivate,setReactivate]=useState(null);
+  const [showEditChar,setShowEditChar]=useState(false);
   const pb=profBonus(char.level||1);
   const atk=getAttackBonus(char); const dc=getSpellSaveDC(char);
   const condArr=lang==="it"?CONDITIONS_IT:CONDITIONS_EN;
@@ -1028,7 +1029,7 @@ function CharSheet({lang,char,isDmView,onSave,onBack,hpInput,setHpInput,invInput
             :<div className="avatar-placeholder" onClick={()=>{}} style={{cursor:"default",opacity:0.4}}><span className="avatar-placeholder-icon">🧙</span></div>
           }
           <div className="char-info">
-            <div className="char-name" onClick={isDmView?undefined:()=>{}}>{char.name}</div>
+            <div className="char-name" onClick={isDmView?undefined:()=>setShowEditChar(true)}>{char.name}</div>
             <div className="char-sub">{char.race} · {char.class} · Lv {char.level}</div>
             {(char.conditions?.length>0||char.concentration)&&(
               <div className="badges" style={{marginTop:8}}>
@@ -1207,6 +1208,10 @@ function CharSheet({lang,char,isDmView,onSave,onBack,hpInput,setHpInput,invInput
       <div className="card"><div className="card-title">{t.notes}</div><textarea className="notes-area" value={char.notes||""} onChange={e=>save({...char,notes:e.target.value})}/></div>
 
       {/* Modals */}
+      {showEditChar&&!isDmView&&<CreateCharModal lang={lang} char={char} onSave={form=>{
+        const nc={...char,name:form.name,class:form.class,race:form.race,level:form.level,hp:{...char.hp,max:form.hpMax,current:Math.min(char.hp.current||form.hpMax,form.hpMax)}};
+        save(nc); setShowEditChar(false);
+      }} onClose={()=>setShowEditChar(false)}/>}
       {editStat&&<EditStatModal stat={editStat} value={char.stats[editStat]} lang={lang} onSave={v=>updateStat(editStat,v)} onClose={()=>setEditStat(null)}/>}
       {showAdd&&<AbilityModal lang={lang} type={showAdd} onSave={item=>addEntry(showAdd,item)} onClose={()=>setShowAdd(false)}/>}
       {editAbility&&<AbilityModal lang={lang} type={editAbility.type} existing={editAbility.item} onSave={item=>editEntry(editAbility.type,item)} onClose={()=>setEditAbility(null)}/>}
